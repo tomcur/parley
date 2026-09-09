@@ -60,6 +60,12 @@ struct LineState {
     /// These are the line's justification opportunities, before subtracting those that end up in
     /// the line's hanging whitespace.
     num_word_separators: u32,
+
+    /// The line's advance when the item currently being appended started contributing to it.
+    ///
+    /// We store this, so that once we reach the item's end, we can calculate its advance by
+    /// subtracting this value from the line's total advance at that point.
+    item_start_x: f32,
 }
 
 impl LineState {
@@ -68,6 +74,7 @@ impl LineState {
         self.x = 0.0;
         self.box_metrics = LineBoxMetrics::default();
         self.num_word_separators = 0;
+        self.item_start_x = 0.;
     }
 }
 
@@ -384,6 +391,12 @@ impl BreakerState {
         self.update_max_height_exceeded();
     }
 
+    /// The advance on the current line of the item currently being appended to it.
+    #[inline]
+    fn item_advance(&self) -> f32 {
+        self.line.x - self.line.item_start_x
+    }
+
     /// Store the current iteration state so that we can revert to it if we later want to take
     /// the line breaking opportunity at this point.
     fn mark_line_break_opportunity(&mut self) {
@@ -482,6 +495,11 @@ pub struct BreakLines<'a, B: Brush> {
     state: BreakerState,
     prev_state: Option<BreakerState>,
     done: bool,
+    /// The advance each layout item contributes to the line it is on, indexed by layout item.
+    ///
+    /// Only the entries of the items on the line being committed are read, and those are written
+    /// before the walk moves past the item.
+    item_advances: Vec<f32>,
 }
 
 impl<'a, B: Brush> BreakLines<'a, B> {
@@ -492,12 +510,14 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         lines.swap(&mut layout.data);
         lines.lines.clear();
         lines.line_items.clear();
+        let item_advances = alloc::vec![0.; layout.data.items.len()];
         Self {
             layout,
             lines,
             state: BreakerState::default(),
             prev_state: None,
             done: false,
+            item_advances,
         }
     }
 
@@ -508,10 +528,17 @@ impl<'a, B: Brush> BreakLines<'a, B> {
         max_advance: f32,
         line_indent: f32,
     ) -> Option<YieldData> {
+        // The line ends within the item the walk is in (or at its end), so that item's advance is
+        // only known now. Items before it were recorded as the walk moved past them.
+        if let Some(advance) = self.item_advances.get_mut(self.state.item_idx) {
+            *advance = self.state.item_advance();
+        }
+
         commit_line(
             self.layout,
             &mut self.lines,
             &mut self.state.line,
+            &self.item_advances,
             max_advance,
             reason,
             line_indent,
@@ -759,6 +786,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     }
                 }
                 LayoutItemKind::TextRun => {
+                    self.state.line.item_start_x = self.state.line.x;
+
                     let run_idx = item.index;
                     let run = Run::new(self.layout, 0, 0, run_idx, None);
                     let slice = run.full_slice();
@@ -923,6 +952,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             }
                         }
                     }
+                    self.item_advances[self.state.item_idx] = self.state.item_advance();
                     self.state.run_idx += 1;
                     self.state.item_idx += 1;
                 }
@@ -1014,6 +1044,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     }
                 }
                 LayoutItemKind::TextRun => {
+                    self.state.line.item_start_x = self.state.line.x;
+
                     let run_idx = item.index;
                     let shaped_run = &self.layout.data.shaped_text.runs()[run_idx];
                     let run = Run::new(self.layout, 0, 0, run_idx, None);
@@ -1076,6 +1108,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                             return Some(());
                         }
                     }
+                    self.item_advances[self.state.item_idx] = self.state.item_advance();
                     self.state.run_idx += 1;
                     self.state.item_idx += 1;
                 }
@@ -1291,6 +1324,7 @@ fn commit_line<B: Brush>(
     layout: &Layout<B>,
     lines: &mut LineLayout,
     state: &mut LineState,
+    item_advances: &[f32],
     max_advance: f32,
     break_reason: BreakReason,
     line_indent: f32,
@@ -1368,6 +1402,11 @@ fn commit_line<B: Brush>(
                 // Map the cluster range to the source-text range. Line boundaries are always
                 // aligned to `Atom`s, i.e., line bounds are always grapheme bounds.
                 let slice = shaped_text.run_slice(item.index as u32);
+                // The item's advance, including any word and letter spacing, was accumulated as
+                // the line was built. It doesn't include justification, as that's applied after
+                // lines are broken.
+                let advance = item_advances[state.items.start + i];
+
                 let item_text_range = if cluster_range.is_empty() {
                     let char_pos = shaped_clusters[cluster_range.start as usize]
                         .chars_range()
@@ -1389,14 +1428,6 @@ fn commit_line<B: Brush>(
                 text_start = text_start.min(item_text_range.start);
                 text_end = text_end.max(item_text_range.end);
                 needs_reorder |= shaped_run.bidi_level != BidiLevel::new(0);
-
-                // Calculate the run's advance including any word/letter spacing. This doesn't
-                // include justification, as that's applied after lines are broken.
-                let effective_spacing = EffectiveSpacing::new(
-                    layout.data.runs[item.index].spacing,
-                    Justification::NONE,
-                );
-                let advance = effective_spacing.slice_advance(slice.narrow(cluster_range.clone()));
 
                 lines.line_items.push(LineItemData {
                     kind: LayoutItemKind::TextRun,
