@@ -14,7 +14,7 @@ use crate::{
 };
 
 use super::{
-    Character, ClusterInfo, ShapedCluster, ShapedClusterFlags, Whitespace, atom::ShapedSlice,
+    Character, CharacterFlags, ShapedCluster, ShapedClusterFlags, Whitespace, atom::ShapedSlice,
     shaper::ShapeOptions,
 };
 
@@ -277,15 +277,19 @@ impl ShapedText {
         {
             self.characters.push(Character {
                 text_byte_start: (range.byte_range.start + byte_offset) as u32,
-                info: ClusterInfo::new(info.boundary, info.is_word_boundary(), ch),
                 style_index: *style_index,
-                grapheme_start: info.is_grapheme_start(),
+                whitespace: Whitespace::from_char(ch),
+                flags: CharacterFlags::new(ch)
+                    .with_grapheme_start(info.is_grapheme_start())
+                    .with_word_boundary(info.is_word_boundary())
+                    .with_line_break_opportunity(info.is_line_break_opportunity()),
             });
         }
         // TODO: we force a grapheme break at the start of the run, as itemization could have split
         // a grapheme into two. Ideally, grapheme segmentation should be performed after
         // itemization, at which case this will always be true.
-        self.characters[characters_start].grapheme_start = true;
+        let first = &mut self.characters[characters_start];
+        first.flags = first.flags.with_grapheme_start(true);
 
         let glyphs_start = self.glyphs.len();
         if item.bidi_level.is_ltr() {
@@ -412,7 +416,7 @@ fn process_shaped_clusters<'a>(
         shaped_clusters: &mut Vec<ShapedCluster>,
     ) {
         let first_character = &characters[cluster.characters_start];
-        let is_newline = first_character.info.whitespace() == Whitespace::Newline;
+        let is_newline = first_character.whitespace() == Whitespace::Newline;
         let (glyph_offset, glyph_len, inline_glyph, advance) = if is_newline {
             // Elide glyphs of newlines.
             (cluster.glyphs_start as u32, 0, false, 0.)
@@ -431,7 +435,7 @@ fn process_shaped_clusters<'a>(
             chars_range: (cluster.characters_start as u32, char_end as u32),
             style_index: first_character.style_index,
             flags: ShapedClusterFlags::new(glyph_len)
-                .with_grapheme_start(first_character.grapheme_start)
+                .with_grapheme_start(first_character.is_grapheme_start())
                 // TODO: fill with actual shaping data (`parley` currently just ignores this)
                 .with_safe_to_break_before(false)
                 .with_inline_glyph(inline_glyph),
@@ -658,8 +662,11 @@ mod tests {
     fn one_grapheme_split_across_items() {
         let shaped = shape_with_font("\u{0600}\u{0623}\u{064F}", NOTO_KUFI_ARABIC);
 
-        let grapheme_starts: Vec<bool> =
-            shaped.characters.iter().map(|c| c.grapheme_start).collect();
+        let grapheme_starts: Vec<bool> = shaped
+            .characters
+            .iter()
+            .map(|c| c.is_grapheme_start())
+            .collect();
         assert_eq!(grapheme_starts, [true, true, false]);
 
         let clusters: Vec<(u32, u32, bool)> = shaped
@@ -681,8 +688,11 @@ mod tests {
     fn three_graphemes_one_cluster() {
         let shaped = shape_with_font("ffi", ROBOTO);
 
-        let grapheme_starts: Vec<bool> =
-            shaped.characters.iter().map(|c| c.grapheme_start).collect();
+        let grapheme_starts: Vec<bool> = shaped
+            .characters
+            .iter()
+            .map(|c| c.is_grapheme_start())
+            .collect();
         assert_eq!(grapheme_starts, [true, true, true]);
 
         let clusters: Vec<(u32, u32, bool)> = shaped
@@ -765,8 +775,11 @@ mod tests {
             &mut shaped,
         );
 
-        let grapheme_starts: Vec<bool> =
-            shaped.characters.iter().map(|c| c.grapheme_start).collect();
+        let grapheme_starts: Vec<bool> = shaped
+            .characters
+            .iter()
+            .map(|c| c.is_grapheme_start())
+            .collect();
         assert_eq!(grapheme_starts, [true, true]);
 
         // But note that, had we had three regional indicator symbols, like `[R0 R1 R2]` itemized as

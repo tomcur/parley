@@ -14,8 +14,8 @@ use core::ops::Range;
 
 use alloc::vec::Vec;
 use parlance::BidiLevel;
+use parley_engine::ShapedText;
 use parley_engine::shape::Whitespace;
-use parley_engine::{Boundary, ShapedText};
 
 /// `HarfRust`-based run data
 #[derive(Clone, Debug, PartialEq)]
@@ -310,13 +310,12 @@ impl<B: Brush> LayoutData<B> {
                     for atom in slice.atoms_start() {
                         let characters = atom.characters();
                         let first_character = characters[0];
-                        let whitespace = first_character.info.whitespace();
-                        let boundary = first_character.info.boundary();
+                        let whitespace = first_character.whitespace();
                         let style = &self.styles[first_character.style_index as usize];
                         let prev_text_wrap_mode = text_wrap_mode;
                         text_wrap_mode = style.text_wrap_mode;
                         if prev_text_wrap_mode == TextWrapMode::Wrap
-                            && (boundary == Boundary::Line
+                            && (first_character.is_line_break_opportunity()
                                 || style.overflow_wrap == OverflowWrap::Anywhere)
                         {
                             min_width =
@@ -324,10 +323,10 @@ impl<B: Brush> LayoutData<B> {
                             running_min_width = 0.0;
                         }
 
-                        // Handle `Whitespace::Newline` rather than relying on `Boundary::Mandatory`,
-                        // because `Boundary::Mandatory` is only set on the character *following* a break,
-                        // at which point it is too late to handle inline boxes between the line break
-                        // and the following character.
+                        // Mandatory breaks are identified by `Whitespace::Newline` rather than by the
+                        // line break opportunity flag, because that flag is only set on the character
+                        // *following* a break, at which point it is too late to handle inline boxes
+                        // between the line break and the following character.
                         //
                         // This function doesn't have special handling for CRLF because two linebreaks
                         // immediately following each other are equivalent to one linebreak for the purpose

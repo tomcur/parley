@@ -3,7 +3,7 @@
 
 use core::ops::Range;
 
-use crate::{Boundary, Glyph, shape::Whitespace};
+use crate::{Glyph, shape::Whitespace};
 
 use super::data::{Character, ShapedCluster};
 
@@ -537,13 +537,17 @@ impl<'a> Atom<'a> {
         self.slice().graphemes_end()
     }
 
-    /// Whether the atom can be broken
+    /// Whether a line may be broken logically before this atom ([UAX #14][]).
+    ///
+    /// See [`Character::is_line_break_opportunity`](crate::shape::Character::is_line_break_opportunity).
+    ///
+    /// [UAX #14]: https://www.unicode.org/reports/tr14/
     #[inline(always)]
-    pub fn boundary_before(&self) -> Boundary {
-        self.slice.characters[self.chars.0 as usize].info.boundary()
+    pub fn is_line_break_opportunity(&self) -> bool {
+        self.slice.characters[self.chars.0 as usize].is_line_break_opportunity()
     }
 
-    /// Whether the atom can be broken
+    /// Whether breaking logically before this atom requires reshaping.
     #[inline(always)]
     pub fn is_safe_to_break_before(&self) -> bool {
         self.slice.shaped_clusters[self.clusters.0 as usize].is_safe_to_break_before()
@@ -616,7 +620,7 @@ impl<'a> Graphemes<'a> {
                 .chars_range()
                 .end;
         let mut advance = self.partial_advance;
-        while idx > char_start && !self.slice.characters[idx as usize].grapheme_start {
+        while idx > char_start && !self.slice.characters[idx as usize].is_grapheme_start() {
             idx -= 1;
             if idx
                 < self.slice.shaped_clusters[self.cluster_idx as usize]
@@ -640,8 +644,8 @@ impl<'a> Graphemes<'a> {
             chars: (idx, grapheme_end),
             advance,
             flags: GraphemeFlags::new(
-                first_char.info.boundary(),
-                first_char.info.whitespace(),
+                first_char.is_line_break_opportunity(),
+                first_char.whitespace(),
                 is_atom_start,
                 is_atom_end,
             ),
@@ -668,7 +672,7 @@ impl<'a> Iterator for Graphemes<'a> {
 
         let mut advance = self.partial_advance;
         let mut idx = grapheme_start + 1;
-        while idx < char_end && !self.slice.characters[idx as usize].grapheme_start {
+        while idx < char_end && !self.slice.characters[idx as usize].is_grapheme_start() {
             if idx
                 == self.slice.shaped_clusters[self.cluster_idx as usize]
                     .chars_range()
@@ -703,8 +707,8 @@ impl<'a> Iterator for Graphemes<'a> {
             chars: (grapheme_start, idx),
             advance,
             flags: GraphemeFlags::new(
-                first_char.info.boundary(),
-                first_char.info.whitespace(),
+                first_char.is_line_break_opportunity(),
+                first_char.whitespace(),
                 is_atom_start,
                 is_atom_end,
             ),
@@ -724,35 +728,39 @@ impl<'a> Iterator for Graphemes<'a> {
 struct GraphemeFlags(u16);
 
 impl GraphemeFlags {
-    const BOUNDARY_MASK: u16 = 0b11;
-    const WHITESPACE_SHIFT: u16 = 2;
+    const LINE_BREAK_OPPORTUNITY: u16 = 1 << 0;
+    const WHITESPACE_SHIFT: u16 = 1;
     const WHITESPACE_MASK: u16 = 0b111 << Self::WHITESPACE_SHIFT;
-    const ATOM_START: u16 = 1 << 5;
-    const ATOM_END: u16 = 1 << 6;
+    const ATOM_START: u16 = 1 << 4;
+    const ATOM_END: u16 = 1 << 5;
 
     // TODO: do we want to expose safe to break?
-    // const SAFE_TO_BREAK_BEFORE: u16 = 1 << 7;
+    // const SAFE_TO_BREAK_BEFORE: u16 = 1 << 6;
 }
 
 impl GraphemeFlags {
     #[inline(always)]
-    fn new(boundary: Boundary, whitespace: Whitespace, atom_start: bool, atom_end: bool) -> Self {
+    fn new(
+        is_line_break_opportunity: bool,
+        whitespace: Whitespace,
+        atom_start: bool,
+        atom_end: bool,
+    ) -> Self {
         Self(
-            boundary as u16
-                + ((whitespace as u16) << Self::WHITESPACE_SHIFT)
+            ((whitespace as u16) << Self::WHITESPACE_SHIFT)
+                + if is_line_break_opportunity {
+                    Self::LINE_BREAK_OPPORTUNITY
+                } else {
+                    0
+                }
                 + if atom_start { Self::ATOM_START } else { 0 }
                 + if atom_end { Self::ATOM_END } else { 0 },
         )
     }
 
     #[inline(always)]
-    fn boundary_before(self) -> Boundary {
-        match self.0 & Self::BOUNDARY_MASK {
-            0 => Boundary::None,
-            1 => Boundary::Line,
-            2 => Boundary::Mandatory,
-            _ => unreachable!("0..3 are the only valid values"),
-        }
+    fn is_line_break_opportunity(self) -> bool {
+        self.0 & Self::LINE_BREAK_OPPORTUNITY != 0
     }
 
     #[inline(always)]
@@ -824,10 +832,14 @@ impl Grapheme {
         self.advance
     }
 
-    /// The boundary at the logical start of this grapheme.
+    /// Whether a line may be broken logically before this grapheme ([UAX #14][]).
+    ///
+    /// See [`Character::is_line_break_opportunity`](crate::shape::Character::is_line_break_opportunity).
+    ///
+    /// [UAX #14]: https://www.unicode.org/reports/tr14/
     #[inline(always)]
-    pub fn boundary_before(&self) -> Boundary {
-        self.flags.boundary_before()
+    pub fn is_line_break_opportunity(&self) -> bool {
+        self.flags.is_line_break_opportunity()
     }
 
     /// The whitespace class of this grapheme's first logical character.
