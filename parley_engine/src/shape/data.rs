@@ -1,11 +1,9 @@
 // Copyright 2026 the Parley Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-#![expect(missing_docs, reason = "Deferred")]
-
 use core::ops::Range;
 
-use crate::{Boundary, shape::Whitespace};
+use crate::shape::Whitespace;
 
 /// Data for a single character of the source text.
 ///
@@ -13,18 +11,151 @@ use crate::{Boundary, shape::Whitespace};
 /// of the source text.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Character {
+    /// The byte offset of this character in the source text.
     pub text_byte_start: u32,
-    pub info: ClusterInfo,
     /// Style index for this character.
     pub style_index: u16,
-    pub grapheme_start: bool,
+    pub(crate) whitespace: Whitespace,
+    pub(crate) flags: CharacterFlags,
 }
 
 impl Character {
     /// The byte range of this character in the source text.
     #[inline(always)]
     pub fn text_byte_range(&self) -> Range<usize> {
-        self.text_byte_start as usize..self.text_byte_start as usize + self.info.len_utf8()
+        self.text_byte_start as usize..self.text_byte_start as usize + self.len_utf8()
+    }
+
+    /// The whitespace class of this character.
+    #[inline(always)]
+    pub fn whitespace(self) -> Whitespace {
+        self.whitespace
+    }
+
+    /// Whether this character is any whitespace.
+    #[inline(always)]
+    pub fn is_whitespace(self) -> bool {
+        self.whitespace != Whitespace::None
+    }
+
+    /// Whether this character begins a grapheme cluster ([UAX #29 § 3][graphemes]).
+    ///
+    /// [graphemes]: https://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries
+    #[inline(always)]
+    pub fn is_grapheme_start(self) -> bool {
+        self.flags.is_grapheme_start()
+    }
+
+    /// Whether there is a word boundary before this character ([UAX #29 § 4][words]).
+    ///
+    /// [words]: https://www.unicode.org/reports/tr29/#Word_Boundaries
+    #[inline(always)]
+    pub fn is_word_boundary(self) -> bool {
+        self.flags.is_word_boundary()
+    }
+
+    /// Whether a line may be broken before this character ([UAX #14][]).
+    ///
+    /// This is true both at soft wrap opportunities and directly after a mandatory break
+    /// character such as `\n`. Mandatory breaks themselves are identified by
+    /// [`Whitespace::Newline`].
+    ///
+    /// [UAX #14]: https://www.unicode.org/reports/tr14/
+    #[inline(always)]
+    pub fn is_line_break_opportunity(self) -> bool {
+        self.flags.is_line_break_opportunity()
+    }
+
+    /// Whether this character is an emoji.
+    #[inline(always)]
+    pub fn is_emoji(self) -> bool {
+        self.flags.is_emoji()
+    }
+
+    /// Returns the number of bytes this character takes up in the (UTF-8) source text.
+    ///
+    /// That number of bytes is always between 1 and 4, inclusive.
+    #[inline(always)]
+    pub fn len_utf8(self) -> usize {
+        self.flags.len_utf8()
+    }
+}
+
+/// Per-[`Character`] properties packed into a byte.
+///
+/// The UTF-8 length sits at bit 0 so it can be extracted with a single mask, and the grapheme
+/// start bit sits at the top so it can be extracted with a single shift (it is summed in hot
+/// loops, see [`ShapedCluster::graphemes_overlapped`]). All other bits are only ever tested, for
+/// which the position doesn't matter.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CharacterFlags(u8);
+
+impl CharacterFlags {
+    /// Bits 0..2: the UTF-8 length of the character minus one.
+    ///
+    /// (Note the UTF-8 length of any character is between 1 and 4 inclusive.)
+    const LEN_UTF8_MASK: u8 = 0b11;
+    const LINE_BREAK_OPPORTUNITY: u8 = 1 << 2;
+    const WORD_BOUNDARY: u8 = 1 << 3;
+    const EMOJI: u8 = 1 << 4;
+    // Bits 5 and 6 are spare.
+    const GRAPHEME_START: u8 = 1 << 7;
+
+    /// Flags for the character `ch`, with all boundary flags unset.
+    #[inline(always)]
+    pub(crate) fn new(ch: char) -> Self {
+        // TODO: Defer to ICU4X properties (see: https://docs.rs/icu/latest/icu/properties/props/struct.Emoji.html).
+        let is_emoji = matches!(ch as u32, 0x1F600..=0x1F64F | 0x1F300..=0x1F5FF | 0x1F680..=0x1F6FF | 0x2600..=0x26FF | 0x2700..=0x27BF);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "`len_utf8` is between 1 and 4 inclusive"
+        )]
+        let len_utf8 = ch.len_utf8() as u8;
+        Self((len_utf8 - 1) | if is_emoji { Self::EMOJI } else { 0 })
+    }
+
+    #[inline(always)]
+    pub(crate) const fn with_grapheme_start(mut self, set: bool) -> Self {
+        self.0 = self.0 & !Self::GRAPHEME_START | if set { Self::GRAPHEME_START } else { 0 };
+        self
+    }
+
+    #[inline(always)]
+    pub(crate) const fn with_word_boundary(mut self, set: bool) -> Self {
+        self.0 = self.0 & !Self::WORD_BOUNDARY | if set { Self::WORD_BOUNDARY } else { 0 };
+        self
+    }
+
+    #[inline(always)]
+    pub(crate) const fn with_line_break_opportunity(mut self, set: bool) -> Self {
+        self.0 = self.0 & !Self::LINE_BREAK_OPPORTUNITY
+            | if set { Self::LINE_BREAK_OPPORTUNITY } else { 0 };
+        self
+    }
+
+    #[inline(always)]
+    const fn len_utf8(self) -> usize {
+        (self.0 & Self::LEN_UTF8_MASK) as usize + 1
+    }
+
+    #[inline(always)]
+    const fn is_line_break_opportunity(self) -> bool {
+        self.0 & Self::LINE_BREAK_OPPORTUNITY != 0
+    }
+
+    #[inline(always)]
+    const fn is_word_boundary(self) -> bool {
+        self.0 & Self::WORD_BOUNDARY != 0
+    }
+
+    #[inline(always)]
+    const fn is_emoji(self) -> bool {
+        self.0 & Self::EMOJI != 0
+    }
+
+    #[inline(always)]
+    const fn is_grapheme_start(self) -> bool {
+        self.0 & Self::GRAPHEME_START != 0
     }
 }
 
@@ -172,89 +303,9 @@ impl ShapedCluster {
         let end = self.chars_range().end as usize;
         let mut graphemes = 1;
         for character in &characters[start..end] {
-            graphemes += u32::from(character.grapheme_start);
+            graphemes += u32::from(character.is_grapheme_start());
         }
         graphemes
-    }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct ClusterInfo {
-    boundary: Boundary,
-    whitespace: Whitespace,
-    is_word_boundary: bool,
-    /// Properties derived from the source character; see the `*_FLAG` constants.
-    flags: u8,
-}
-
-impl ClusterInfo {
-    /// Bits 0..2: the UTF-8 length of the source character minus one.
-    ///
-    /// (Note the UTF-8 length of any character is between 1 and 4 inclusive.)
-    const LEN_UTF8_MASK: u8 = 0b11;
-    /// Whether the source character is an emoji.
-    const EMOJI_FLAG: u8 = 1 << 2;
-
-    #[inline(always)]
-    pub fn new(boundary: Boundary, is_word_boundary: bool, source_char: char) -> Self {
-        // TODO: Defer to ICU4X properties (see: https://docs.rs/icu/latest/icu/properties/props/struct.Emoji.html).
-        let is_emoji = matches!(source_char as u32, 0x1F600..=0x1F64F | 0x1F300..=0x1F5FF | 0x1F680..=0x1F6FF | 0x2600..=0x26FF | 0x2700..=0x27BF);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "`len_utf8` is between 1 and 4 inclusive"
-        )]
-        let len_utf8 = source_char.len_utf8() as u8;
-        let flags = (len_utf8 - 1) | if is_emoji { Self::EMOJI_FLAG } else { 0 };
-        Self {
-            boundary,
-            whitespace: Whitespace::from_char(source_char),
-            is_word_boundary,
-            flags,
-        }
-    }
-
-    // Returns the boundary type of the cluster.
-    #[inline(always)]
-    pub fn boundary(self) -> Boundary {
-        self.boundary
-    }
-
-    // Returns the whitespace type of the cluster.
-    #[inline(always)]
-    pub fn whitespace(self) -> Whitespace {
-        self.whitespace
-    }
-
-    /// Returns if the cluster is a line break opportunity (soft or mandatory).
-    #[inline]
-    pub fn is_boundary(self) -> bool {
-        self.boundary != Boundary::None
-    }
-
-    /// Returns if the cluster is a word boundary.
-    #[inline]
-    pub fn is_word_boundary(self) -> bool {
-        self.is_word_boundary
-    }
-
-    /// Returns if the cluster is an emoji.
-    #[inline]
-    pub fn is_emoji(self) -> bool {
-        self.flags & Self::EMOJI_FLAG != 0
-    }
-
-    /// Returns if the cluster is any whitespace.
-    #[inline(always)]
-    pub fn is_whitespace(self) -> bool {
-        self.whitespace() != Whitespace::None
-    }
-
-    /// Returns the number of bytes the source character would need if encoded in UTF-8.
-    ///
-    /// That number of bytes is always between 1 and 4, inclusive.
-    #[inline(always)]
-    pub fn len_utf8(self) -> usize {
-        (self.flags & Self::LEN_UTF8_MASK) as usize + 1
     }
 }
 
@@ -263,7 +314,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cluster_info() {
+    fn character_flags() {
         for (ch, len, emoji) in [
             ('a', 1, false),
             (' ', 1, false),
@@ -275,12 +326,37 @@ mod tests {
             ('\u{2600}', 3, true),
             ('\u{1F600}', 4, true),
         ] {
-            let info = ClusterInfo::new(Boundary::Line, false, ch);
-            assert_eq!(info.boundary(), Boundary::Line, "{ch:?}");
-            assert!(!info.is_word_boundary(), "{ch:?}");
-            assert_eq!(info.whitespace(), Whitespace::from_char(ch), "{ch:?}");
-            assert_eq!(info.len_utf8(), len, "{ch:?}");
-            assert_eq!(info.is_emoji(), emoji, "{ch:?}");
+            let flags = CharacterFlags::new(ch);
+            assert_eq!(flags.len_utf8(), len, "{ch:?}");
+            assert_eq!(flags.is_emoji(), emoji, "{ch:?}");
+            assert!(!flags.is_grapheme_start(), "{ch:?}");
+            assert!(!flags.is_word_boundary(), "{ch:?}");
+            assert!(!flags.is_line_break_opportunity(), "{ch:?}");
+
+            let flags = flags
+                .with_grapheme_start(true)
+                .with_word_boundary(true)
+                .with_line_break_opportunity(true);
+            assert_eq!(flags.len_utf8(), len, "{ch:?}");
+            assert_eq!(flags.is_emoji(), emoji, "{ch:?}");
+            assert!(flags.is_grapheme_start(), "{ch:?}");
+            assert!(flags.is_word_boundary(), "{ch:?}");
+            assert!(flags.is_line_break_opportunity(), "{ch:?}");
+
+            let flags = flags
+                .with_grapheme_start(false)
+                .with_word_boundary(false)
+                .with_line_break_opportunity(false);
+            assert_eq!(flags.len_utf8(), len, "{ch:?}");
+            assert_eq!(flags.is_emoji(), emoji, "{ch:?}");
+            assert!(!flags.is_grapheme_start(), "{ch:?}");
+            assert!(!flags.is_word_boundary(), "{ch:?}");
+            assert!(!flags.is_line_break_opportunity(), "{ch:?}");
         }
+    }
+
+    #[test]
+    fn character_size() {
+        assert_eq!(size_of::<Character>(), 8);
     }
 }

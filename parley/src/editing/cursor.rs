@@ -261,7 +261,7 @@ impl Cursor {
                     return Self::from_byte_index(layout, usize::MAX, Affinity::Downstream);
                 };
                 cluster = next;
-                if !cluster.info().is_whitespace() {
+                if !cluster.is_whitespace() {
                     break;
                 }
             }
@@ -285,7 +285,7 @@ impl Cursor {
             // on the start of the preceding "actual" word.
             while let Some(prev) = cluster.previous_logical_word() {
                 cluster = prev;
-                if !cluster.info().is_whitespace() {
+                if !cluster.is_whitespace() {
                     break;
                 }
             }
@@ -439,7 +439,7 @@ impl Cursor {
                 .shaped_text
                 .characters()
                 .last()
-                .map(|character| character.info.whitespace() == Whitespace::Newline)
+                .map(|character| character.whitespace() == Whitespace::Newline)
                 .unwrap_or_default()
         {
             let run = layout.get(path.line_index() + 1)?.item(0)?.run()?;

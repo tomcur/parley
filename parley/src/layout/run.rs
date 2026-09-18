@@ -448,6 +448,6 @@ fn count_graphemes(slice: ShapedSlice<'_>) -> usize {
     slice
         .characters()
         .iter()
-        .filter(|character| character.grapheme_start)
+        .filter(|character| character.is_grapheme_start())
         .count()
 }

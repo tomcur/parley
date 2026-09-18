@@ -21,7 +21,7 @@ use crate::{InlineBoxKind, OverflowWrap, TextWrapMode, WhiteSpaceCollapse};
 
 use core::ops::Range;
 use parley_engine::shape::Whitespace;
-use parley_engine::{Atom, Boundary, FontMetrics};
+use parley_engine::{Atom, FontMetrics};
 
 #[derive(Default)]
 struct LineLayout {
@@ -780,11 +780,10 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                     for atom in slice.atoms_from(self.state.cluster_idx) {
                         // Retrieve metadata about the atom
                         let first_character = &atom.characters()[0];
-                        let whitespace = first_character.info.whitespace();
+                        let whitespace = first_character.whitespace();
                         let is_newline = whitespace == Whitespace::Newline;
                         // Whether this atom is a justification opportunity.
                         let is_separator = is_word_separator(whitespace);
-                        let boundary = first_character.info.boundary();
                         let max_height_exceeded = self.state.line.max_height_exceeded;
                         let style = &self.layout.data.styles[first_character.style_index as usize];
 
@@ -810,7 +809,8 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                                 max_advance,
                                 line_indent,
                             );
-                        } else if boundary == Boundary::Line && text_wrap_mode == TextWrapMode::Wrap
+                        } else if first_character.is_line_break_opportunity()
+                            && text_wrap_mode == TextWrapMode::Wrap
                         {
                             // We don't record boundaries when the advance is 0. As we do not want overflowing content to cause extra consecutive
                             // line breaks. We should accept the overflowing fragment in that scenario.
@@ -1036,7 +1036,7 @@ impl<'a, B: Brush> BreakLines<'a, B> {
                         }
 
                         let first_character = &atom.characters()[0];
-                        let whitespace = first_character.info.whitespace();
+                        let whitespace = first_character.whitespace();
                         let is_newline = whitespace == Whitespace::Newline;
                         let is_separator = is_word_separator(whitespace);
                         let advance = spacing.atom_advance(&atom);
@@ -1564,7 +1564,7 @@ fn hanging_whitespace<B: Brush>(
                         line_item.is_rtl(),
                     );
                     let first_character = &atom.characters()[0];
-                    let whitespace = first_character.info.whitespace();
+                    let whitespace = first_character.whitespace();
                     if in_conditional_suffix && whitespace != Whitespace::Newline {
                         if layout.data.styles[first_character.style_index as usize]
                             .white_space_collapse
