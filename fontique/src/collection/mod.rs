@@ -583,10 +583,9 @@ impl Inner {
         if let Some(shared) = &self.shared {
             shared.data.lock().unwrap().clear();
             shared.bump_version();
-        } else {
-            self.data.clear();
         }
         self.data.clear();
+        self.fallback_cache.reset();
     }
 
     fn sync_shared(&mut self) {
