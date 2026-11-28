@@ -979,3 +979,18 @@ fn load_fonts_from_paths_registers_each_face_once() {
         }
     }
 }
+
+#[test]
+fn clear_empties_fallbacks() {
+    let mut collection = Collection::new(CollectionOptions {
+        shared: false,
+        system_fonts: false,
+    });
+    let latin = Script::from_bytes(*b"Latn");
+    collection.set_fallbacks(latin, core::iter::once(FamilyId::new()));
+    // This read fills the cache.
+    assert_eq!(collection.fallback_families(latin).count(), 1);
+
+    collection.clear();
+    assert_eq!(collection.fallback_families(latin).count(), 0);
+}
