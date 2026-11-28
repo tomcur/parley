@@ -446,8 +446,9 @@ impl Inner {
         let selector = key.into();
         let script = selector.script();
         let lang_key = selector.locale();
+        // Resets the fallback cache if another handle changed the shared data.
+        self.sync_shared();
         if self.fallback_cache.script != Some(script) || self.fallback_cache.language != lang_key {
-            self.sync_shared();
             self.fallback_cache.reset();
             #[cfg(feature = "system")]
             if let Some(families) = self.data.fallbacks.get(selector) {
